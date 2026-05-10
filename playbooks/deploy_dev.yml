@@ -22,7 +22,7 @@
 
   vars:
     # Toggle between pulling from Docker Hub or using locally built images.
-    winalux_use_local_image : false
+    winalux_use_local_image: false
 
   pre_tasks:
     - name: "Validation | Verify Target User"
@@ -40,10 +40,10 @@
             username: "{{ docker_hub_user }}"
             password: "{{ docker_hub_token }}"
             registry: docker.io
-          when: not winalux_use_local_image  | bool
+          when: not winalux_use_local_image | bool
 
         - name: "Provisioning | Deploy Environment Containers"
-          include_role:
+          ansible.builtin.include_role:
             name: winalux
           loop: "{{ winalux_devs if dev_user is not defined else winalux_devs | selectattr('name', 'equalto', dev_user) | list }}"
           vars:
