@@ -1,0 +1,26 @@
+namespace: addonol
+name: winalux
+version: 0.1.0
+authors:
+  - "addonol"
+description: >
+  A role to deploy isolated, profile-based development environments using rootless containers.
+  Designed for seamless VS Code integration, it provides autonomous workspaces without
+  altering the host system.
+readme: README.md
+license:
+  - MIT
+tags:
+  - infrastructure
+  - standalone
+  - podman
+  - rootless
+  - vscode
+  - linux
+  - development
+  - container
+  - profiles
+repository: "https://github.com/addonol/winalux"
+documentation: "https://github.com/addonol/winalux/blob/main/README.md"
+homepage: "https://github.com/addonol/winalux"
+issues: https://github.com/addonol/winalux/issues"

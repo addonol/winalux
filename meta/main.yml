@@ -1,0 +1,35 @@
+# @file roles/winalux/meta/main.yml
+# @package winalux-core
+# @description
+#   Metadata and dependency tracking for the Winalux role.
+#   Ensures compatibility with Podman collections and defines supported platforms.
+
+galaxy_info:
+  author: addonol
+  description: Profile-based isolated developer environments using Podman and VS Code.
+
+  license: MIT
+  min_ansible_version: "2.15.0"
+
+  platforms:
+    - name: Fedora
+      versions:
+        - all
+    - name: Ubuntu
+      versions:
+        - jammy
+        - noble
+    - name: Debian
+      versions:
+        - bookworm
+
+  galaxy_tags:
+    - development
+    - containers
+    - podman
+    - vscode
+    - security
+
+dependencies:
+  - name: containers.podman
+    version: ">=1.10.0"

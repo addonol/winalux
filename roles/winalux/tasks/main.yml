@@ -1,0 +1,205 @@
+# @file roles/winalux/tasks/main.yml
+# @package winalux-core
+# @description
+#   Orchestrates the lifecycle and security provisioning of developer environments.
+#   Implements a layered security model:
+#   1. SSH ForceCommand (Gatekeeper)
+#   2. Environment-level validation (LC_WINALUX_TOKEN)
+#   3. Shell-level authentication (Global Bashrc sourcing)
+#
+# @args winalux_dev: Dictionary containing developer profile (name, profile, public_key, etc.)
+# @args winalux_base_project_path: Base directory on the host for project data.
+
+---
+
+# --- 1. HOST PREPARATION ---
+# Ensures the host machine is ready for rootless container operations.
+- name: "Host | Configure environment variables in .bashrc"
+  ansible.builtin.lineinfile:
+    path: "{{ ansible_facts['user_dir'] }}/.bashrc"
+    regexp: "{{ host_var.regexp }}"
+    line: "{{ host_var.line }}"
+  loop:
+    - regexp: '^export XDG_RUNTIME_DIR='
+      line: 'export XDG_RUNTIME_DIR="/run/user/$(id -u)"'
+    - regexp: '^export DBUS_SESSION_BUS_ADDRESS='
+      line: 'export DBUS_SESSION_BUS_ADDRESS="unix:path=${XDG_RUNTIME_DIR}/bus"'
+  loop_control:
+    loop_var: host_var
+  become: false
+
+- name: "Host | Initialize directory structure"
+  ansible.builtin.file:
+    path: "{{ dir_path }}"
+    state: directory
+    mode: '0700'
+  loop:
+    - "{{ ansible_facts['user_dir'] }}/.config/systemd/user"
+    - "{{ ansible_facts['user_dir'] }}/.local/bin"
+    - "{{ winalux_base_project_path }}/{{ winalux_dev.name }}/.ssh"
+  loop_control:
+    loop_var: dir_path
+  become: false
+
+# --- 2. DEPLOYMENT ---
+- name: "Container | Trigger Stack Deployment"
+  ansible.builtin.include_tasks: deploy_stack.yml
+
+# --- 3. PROVISIONING & HARDENING ---
+- name: "Provisioning | Secure Developer Environment"
+  block:
+
+    - name: "Security | Generate volatile access token"
+      # Creates a 12-char session token used by the Gatekeeper to authorize login.
+      ansible.builtin.set_fact:
+        winalux_volatile_token: "{{ query('community.general.random_string', length=12,
+          upper=true, lower=true, numbers=true, special=false) | first }}"
+
+    - name: "Security | Audit Log - Access Token"
+      ansible.builtin.debug:
+        msg: "🔑 ACCESS TOKEN FOR {{ winalux_dev.name | upper }}: {{ winalux_volatile_token }}"
+
+    - name: "Security | Prepare Gatekeeper template"
+      ansible.builtin.template:
+        src: gatekeeper.sh.j2
+        dest: "{{ ansible_facts['user_dir'] }}/gatekeeper_{{ winalux_dev.name }}.sh"
+        mode: '0700'
+
+    - name: "Security | Lockdown"
+      block:
+        - name: "Security | Push gatekeeper script"
+          ansible.builtin.command: >
+            podman cp {{ ansible_facts['user_dir'] }}/gatekeeper_{{ winalux_dev.name }}.sh
+            winalux_{{ winalux_dev.name }}:/usr/local/bin/winalux-gatekeeper
+
+        - name: "Security | Apply Shell Infiltration"
+          containers.podman.podman_container_exec:
+            name: "winalux_{{ winalux_dev.name }}"
+            user: root
+            command: >
+              /bin/bash -c '
+              chown root:root /usr/local/bin/winalux-gatekeeper && 
+              chmod 555 /usr/local/bin/winalux-gatekeeper &&
+              if [ ! -f /bin/sh.real ]; then
+                cp /bin/sh /bin/sh.real
+                cp /bin/bash /bin/bash.real
+                
+                printf "#!/bin/sh.real\n. /usr/local/bin/winalux-gatekeeper\nexec /bin/sh.real \"\$@\"" > /usr/local/bin/sh-wrapper
+                printf "#!/bin/sh.real\n. /usr/local/bin/winalux-gatekeeper\nexec /bin/bash.real \"\$@\"" > /usr/local/bin/bash-wrapper
+                chmod +x /usr/local/bin/sh-wrapper /usr/local/bin/bash-wrapper
+
+                mv -f /usr/local/bin/sh-wrapper /bin/sh
+                mv -f /usr/local/bin/bash-wrapper /bin/bash
+              fi'
+
+    - name: "Provisioning | Customize Developer Environment"
+      containers.podman.podman_container_exec:
+        name: "winalux_{{ winalux_dev.name }}"
+        user: root
+        command: |
+          /bin/bash.real -c '
+          mkdir -p /home/developer/.ssh
+          echo "{{ winalux_dev.public_key }}" > /home/developer/.ssh/authorized_keys
+          
+          cat << "EOF" > /home/developer/.bashrc
+          export WINALUX_PROFILE={{ winalux_dev.profile }}
+          export PATH="/home/developer/venv/bin:/usr/local/bin:/usr/bin:/bin"
+          export PS1="\[\e[34m\]➜  \[\e[1;97m\]\w \[\e[90m\]\$( [ -n \"\$VIRTUAL_ENV\" ] && 
+          echo \"(venv) \" )\[\e[34m\]\$\[\e[0m\] "
+
+          
+          if ! pgrep -f "winalux-monitor" > /dev/null; then
+              nohup /usr/local/bin/winalux-monitor > /dev/null 2>&1 &
+          fi
+
+          [ -d /home/developer/venv ] && source /home/developer/venv/bin/activate
+          alias ll="ls -la --color=auto"
+          cd /home/developer
+          EOF
+
+          cat << "META_EOF" > /home/developer/.winalux_metadata
+          PROFILE: {{ winalux_dev.profile }}
+          ACCESS TOKEN: {{ winalux_volatile_token }}
+          DISK LIMIT: {{ winalux_dev.disk_limit_gb }} GB
+          META_EOF
+
+          chown -R 1000:1000 /home/developer
+          chmod 700 /home/developer/.ssh
+          chmod 600 /home/developer/.ssh/authorized_keys
+          touch /home/developer/.access_log
+          chown root:root /home/developer/.access_log /home/developer/.winalux_metadata
+          chmod 622 /home/developer/.access_log
+          chmod 444 /home/developer/.winalux_metadata'
+
+    - name: "Monitoring | Prepare monitor script"
+      ansible.builtin.template:
+        src: monitor.sh.j2
+        dest: "{{ ansible_facts['user_dir'] }}/monitor_{{ winalux_dev.name }}.sh"
+        mode: '0755'
+
+    - name: "Monitoring | Inject and Launch Service"
+      block:
+        - name: "Monitoring | Copy script to container"
+          ansible.builtin.command: >
+            podman cp {{ ansible_facts['user_dir'] }}/monitor_{{ winalux_dev.name }}.sh
+            winalux_{{ winalux_dev.name }}:/usr/local/bin/winalux-monitor
+          changed_when: true
+
+        - name: "Monitoring | Set permissions and start daemon"
+          block:
+            - name: "Monitoring | Set script ownership (Root)"
+              containers.podman.podman_container_exec:
+                name: "winalux_{{ winalux_dev.name }}"
+                user: root
+                command: |
+                  /bin/bash.real -c "chown root:root /usr/local/bin/winalux-monitor && 
+                  chmod 755 /usr/local/bin/winalux-monitor"
+
+            - name: "Monitoring | Launch Daemon as Developer"
+              containers.podman.podman_container_exec:
+                name: "winalux_{{ winalux_dev.name }}"
+                user: "1000"
+                command: |
+                  /bin/bash.real -c "nohup /usr/local/bin/winalux-monitor > /dev/null 2>&1 &"
+
+    - name: "Provisioning | Inject Python dependencies (UV)"
+      containers.podman.podman_container_exec:
+        name: "winalux_{{ winalux_dev.name }}"
+        user: "1000"
+        command: >-
+          bash -c "[ ! -d /home/developer/venv ] && uv venv /home/developer/venv;
+          VIRTUAL_ENV=/home/developer/venv uv pip install {{ winalux_dev.libraries | default('') }}"
+      when: winalux_dev.libraries is defined and winalux_dev.libraries | length > 0
+
+    - name: "Provisioning | Inject Taskfile Automation"
+      block:
+        - name: "Taskfile | Generate and Push"
+          ansible.builtin.template:
+            src: Taskfile.yml.j2
+            dest: "{{ ansible_facts['user_dir'] }}/Taskfile_{{ winalux_dev.name }}.yml"
+            mode: '0600'
+
+        - name: "Taskfile | Transfer to container"
+          ansible.builtin.shell: |
+            podman cp "{{ ansible_facts['user_dir'] }}/Taskfile_{{ winalux_dev.name }}.yml" \
+              "winalux_{{ winalux_dev.name }}:/home/developer/Taskfile.yml"
+          changed_when: true
+
+        - name: "Taskfile | Secure filesystem permissions"
+          containers.podman.podman_container_exec:
+            name: "winalux_{{ winalux_dev.name }}"
+            user: root
+            command: >
+              /bin/bash.real -c "chown 1000:1000 /home/developer/Taskfile.yml && 
+              chmod 555 /home/developer/Taskfile.yml"
+
+    - name: "Provisioning | Cleanup Host Artifacts"
+      ansible.builtin.file:
+        path: "{{ artifact_path }}"
+        state: absent
+      loop:
+        - "{{ ansible_facts['user_dir'] }}/gatekeeper_{{ winalux_dev.name }}.sh"
+        - "{{ ansible_facts['user_dir'] }}/Taskfile_{{ winalux_dev.name }}.yml"
+        - "{{ ansible_facts['user_dir'] }}/monitor_{{ winalux_dev.name }}.sh"
+      loop_control:
+        loop_var: artifact_path

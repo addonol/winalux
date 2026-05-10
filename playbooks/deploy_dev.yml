@@ -1,0 +1,59 @@
+# @file playbooks/deploy_dev.yml
+# @package winalux-core
+# @description 
+#   Orchestrates the deployment of isolated developer environments on target nodes.
+#   Handles authentication, environment validation, and role injection for 
+#   multi-user container provisioning.
+#
+# @usage
+#   - Standard Deployment : ansible-playbook deploy_dev.yml
+#   - Local Image Testing : ansible-playbook deploy_dev.yml -e "use_local_image=true"
+#   - Targeted Deployment : ansible-playbook deploy_dev.yml -e "dev_user=addonol"
+
+
+---
+- name: Deploy Winalux Environments
+  hosts: all
+  gather_facts: true
+  
+  vars_files:
+    - "{{ playbook_dir }}/../secrets.yml"
+    - "{{ playbook_dir }}/../ansible/inventory/group_vars/all.yml"
+
+  vars:
+    # Toggle between pulling from Docker Hub or using locally built images.
+    winalux_use_local_image : false
+
+  pre_tasks:
+    - name: "Validation | Verify Target User"
+      ansible.builtin.assert:
+        that: "dev_user in devs | map(attribute='name') | list"
+        fail_msg: "CRITICAL: User '{{ dev_user }}' is not defined in the inventory grid."
+      when: dev_user is defined
+
+  tasks:
+    - name: "Registry | Session Management"
+      block:
+        - name: Login to Docker Hub Registry
+          # Skips authentication if we are using local images to avoid unnecessary API calls.
+          containers.podman.podman_login:
+            username: "{{ docker_hub_user }}"
+            password: "{{ docker_hub_token }}"
+            registry: docker.io
+          when: not winalux_use_local_image  | bool
+
+        - name: "Provisioning | Deploy Environment Containers"
+          include_role:
+            name: winalux
+          loop: "{{ winalux_devs if dev_user is not defined else winalux_devs | selectattr('name', 'equalto', dev_user) | list }}"
+          vars:
+            winalux_dev: "{{ item }}"
+
+      always:
+        - name: "Registry | Cleanup"
+          # Ensures no credentials remain cached on the target node.
+          containers.podman.podman_logout:
+            registry: docker.io
+          when: 
+            - not winalux_use_local_image | bool
+            - docker_hub_token is defined

@@ -1,0 +1,18 @@
+# @file .ansible-lint
+# @package winalux-core
+# @description Linting configuration to ensure Galaxy compatibility and code quality.
+
+exclude_paths:
+    - .venv/
+    - group_vars/all/vault.yml
+    - vars/vault.yml
+    - "**/molecule/*/test_vars.yml"
+    - "**/molecule/*/roles/*"
+    - dags/
+
+warn_list:
+    - yaml[new-line-at-end-of-file]
+
+skip_list:
+    - internal-error
+    - yaml[new-line-at-end-of-file]

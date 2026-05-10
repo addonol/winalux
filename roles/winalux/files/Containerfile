@@ -1,0 +1,80 @@
+# @file roles/winalux/files/Containerfile
+# @package winalux-core
+# @description 
+#   Hardened multi-arch base image for Winalux developer environments.
+#   Optimized for rootless execution and secure remote access.
+
+# ==============================================================================
+# STAGE 1: BASE FOUNDATION
+# ==============================================================================
+FROM python:3.11.9-slim-bookworm AS base
+
+ARG USERNAME=developer
+ARG USER_UID=1000
+ARG USER_GID=1000
+
+# Environment optimization and Python toolchain paths
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HOME=/home/${USERNAME} \
+    VIRTUAL_ENV=/home/${USERNAME}/venv \
+    PATH="/home/${USERNAME}/venv/bin:/usr/local/bin:/usr/bin:/bin"
+
+# Install core system utilities and security tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git curl procps openssh-server libpq5 nano passwd bc \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Hardened SSH Setup for Rootless Mode
+# 1. Create necessary directories with appropriate permissions
+# 2. Generate host keys and transfer ownership to the unprivileged user
+# 3. Disable password auth and enforce Pubkey authentication
+RUN mkdir -p /var/run/sshd /etc/ssh \
+    && chmod 0755 /var/run/sshd \
+    && ssh-keygen -A \
+    # On donne la propriété des clés à l utilisateur developer pour qu il puisse les lire
+    && chown -R 1000:1000 /etc/ssh \
+    && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config \
+    && sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config \
+    && echo "Port 2222" >> /etc/ssh/sshd_config
+
+# Integrate infrastructure tools: Astral UV (fast pip) and Go-Task
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN curl -sL https://taskfile.dev/install.sh | sh -s -- -d -b /usr/local/bin
+
+# Non-root user provisioning (UID/GID 1000)
+RUN groupadd --gid ${USER_GID} ${USERNAME} || true \
+    && useradd --uid ${USER_UID} --gid ${USER_GID} -m -s /bin/bash ${USERNAME} || true
+
+WORKDIR ${HOME}
+USER ${USER_UID}
+
+# Initialize isolated Python environment
+RUN uv venv ${VIRTUAL_ENV}
+
+# ==============================================================================
+# STAGE 2: WEB PROFILE
+# Optimized for backend and general web development.
+# ==============================================================================
+FROM base AS profile-web
+USER 1000
+
+# Install development workflow utilities
+RUN uv pip install --no-cache pre-commit
+
+# Launch SSH daemon in foreground using explicit rootless configuration
+CMD ["/usr/sbin/sshd", "-D", "-p", "2222", "-e", "-f", "/etc/ssh/sshd_config"]
+
+# ==============================================================================
+# STAGE 3: DATA PROFILE
+# Optimized for Data Science and Jupyter-based workflows.
+# ==============================================================================
+FROM base AS profile-data
+USER 1000
+EXPOSE 8888
+
+# Install high-performance scientific Python stack
+RUN uv pip install --no-cache jupyterlab pandas numpy matplotlib scipy
+
+# Simultaneously launch SSH daemon and JupyterLab
+CMD ["/bin/bash", "-c", "/usr/sbin/sshd -D -p 2222 -e -f /etc/ssh/sshd_config & jupyter lab --ip=0.0.0.0 --no-browser"]

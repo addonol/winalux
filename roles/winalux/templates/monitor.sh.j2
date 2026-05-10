@@ -1,0 +1,85 @@
+#!/bin/sh.real
+# ==============================================================================
+# @file roles/winalux/templates/monitor.sh.j2
+# @package winalux-core
+# @description 
+#   Background telemetry daemon for Winalux resources.
+#   Calculates isolated container metrics (RSS Memory, CPU Delta, Storage)
+#   and persists them for the UI dashboard.
+# ==============================================================================
+
+# Configuration injected during Ansible provisioning
+LIMIT_GB={{ winalux_dev.disk_limit_gb | default(10) }}
+METRICS_FILE="/home/developer/.winalux_metrics"
+
+# --- CPU Telemetry Helper ---
+# Extracts raw ticks from /proc/stat. 
+# Format: user nice system idle iowait irq softirq steal
+get_cpu_data() {
+    grep '^cpu ' /proc/stat
+}
+
+# Capture initial state for differential calculation
+PREV_CPU_DATA=$(get_cpu_data)
+
+while true; do
+    # --- 1. STORAGE ANALYSIS ---
+    # Calculate disk usage of the persistent home directory in KB.
+    USED_KB=$(du -s /home/developer 2>/dev/null | awk '{print $1}')
+    
+    # Convert to GB (2 decimal precision) and calculate percentage against quota.
+    USED_GB=$(awk -v used="$USED_KB" 'BEGIN {printf "%.2f", used/1048576}')
+    PERCENT_DISK=$(awk -v used="$USED_KB" -v lim="$LIMIT_GB" 'BEGIN {p=(used/(lim*1048576))*100; printf "%d", (p>100?100:p)}')
+    
+    # --- 2. ISOLATED RAM (RSS Sum) ---
+    # Standard 'free' reports host RAM. To get true container usage, 
+    # we sum the Resident Set Size (RSS) of all processes owned by UID 1000.
+    RAM_USED_MB=$(ps -u 1000 -o rss= | awk '{sum+=$1} END {print int(sum/1024)}')
+    [ -z "$RAM_USED_MB" ] && RAM_USED_MB=0
+    
+    # Host total RAM is kept for system context.
+    RAM_TOTAL_MB=$(free -m | grep Mem | awk '{print $2}')
+
+    # --- 3. ISOLATED CPU (Differential /proc/stat) ---
+    NOW_CPU_DATA=$(get_cpu_data)
+    
+    # Calculate percentage by comparing idle vs total ticks over the 10s interval.
+    CPU_PERCENT=$(awk -v prev="$PREV_CPU_DATA" -v now="$NOW_CPU_DATA" '
+        BEGIN {
+            split(prev, p); split(now, n);
+            prev_total = p[2]+p[3]+p[4]+p[5]+p[6]+p[7]+p[8];
+            prev_idle = p[5]+p[6];
+            now_total = n[2]+n[3]+n[4]+n[5]+n[6]+n[7]+n[8];
+            now_idle = n[5]+n[6];
+            
+            diff_total = now_total - prev_total;
+            diff_idle = now_idle - prev_idle;
+            
+            if (diff_total > 0) 
+                printf "%.1f", (1 - (diff_idle / diff_total)) * 100;
+            else 
+                printf "0.0";
+        }')
+    
+    # Shift state for next iteration
+    PREV_CPU_DATA=$NOW_CPU_DATA
+
+    # --- 4. PERSISTENCE & SYNC ---
+    # Synchronize timestamp with the configured local timezone.
+    LOCAL_SYNC=$(TZ="Europe/Brussels" date '+%Y-%m-%d %H:%M:%S')
+    
+    # Atomic write using a temporary file to prevent partial reads by the UI.
+    cat << EOF > "${METRICS_FILE}.tmp"
+DISK_LIMIT_GB=$LIMIT_GB
+DISK_USED_GB=$USED_GB
+DISK_USAGE_PERCENT=$PERCENT_DISK
+RAM_TOTAL_MB=$RAM_TOTAL_MB
+RAM_USED_MB=$RAM_USED_MB
+CPU_USAGE_PERCENT=$CPU_PERCENT
+LAST_UPDATE="$LOCAL_SYNC"
+EOF
+    mv "${METRICS_FILE}.tmp" "$METRICS_FILE"
+    
+    # Polling interval
+    sleep 10
+done

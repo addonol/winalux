@@ -1,0 +1,43 @@
+# @file inventory/hosts.yml
+# @description Multi-target inventory for Winalux deployment.
+#              Allows switching between local development and remote ARM64 nodes.
+
+---
+all:
+  children:
+    # --- Target: Local Machine ---
+    local_dev:
+      hosts:
+        localhost:
+          ansible_connection: local
+          winalux_ram_limit_gb: 4.0
+
+    remote-pi:
+      hosts:
+        winalux_raspberry:
+          ansible_host: 192.XXX.0.XXX
+          ansible_user: pi
+          ansible_ssh_private_key_file: "~/.ssh/ansible-raspberry"
+          winalux_ram_limit_gb: 2.5
+
+  # --- Shared Configuration ---
+  vars:
+    winalux_base_project_path: "{{ ansible_facts['user_dir'] }}/projects"
+    winalux_devs:
+      - name: "workspace_1"
+        profile: "web"
+        ssh_port: 2225
+        app_port: 8002
+        disk_limit_gb: 10
+        public_key: XXXXXXX"
+        extra_ports:
+          - "7430:7420"
+          - "7439:7419"
+          - "11211:11211"
+
+      - name: "workspace_2"
+        profile: "web"
+        ssh_port: 2224
+        app_port: 8003
+        disk_limit_gb: 10
+        public_key: "XXXXXXX"

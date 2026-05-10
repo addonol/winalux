@@ -1,0 +1,61 @@
+---
+# @file defaults/main.yml
+# @package winalux
+# @description
+#    Global configuration and environment profiles for the Winalux role.
+#    This file defines the default versions, base packages, and specialized
+#    development stacks used to build isolated containers.
+#
+# @example
+#    To override the Django version in your playbook:
+#    winalux_versions:
+#      django: "5.1.0"
+
+# --- Project Metadata ---
+winalux_project_name: "winalux"
+winalux_release_version: "0.1.0"
+
+# --- Infrastructure Defaults ---
+winalux_base_project_path: "{{ ansible_facts['user_dir'] }}/projects"
+winalux_ram_limit_gb: 2.5
+
+# --- Default empty list ---
+# This ensures the role doesn't crash if no devs are defined
+winalux_devs: []
+
+# --- Software Versions ---
+# Core dependency versions managed as a dictionary for easy overriding.
+winalux_versions:
+  django: "5.2.13"
+  djangorestframework: "3.17.1"
+  pandas: "3.0.2"
+  faktory: "1.0.0"
+
+# --- Shared Base Packages ---
+# Common Python requirements for all profiles.
+winalux_base_packages:
+  - "django=={{ winalux_versions.django }}"
+  - "djangorestframework=={{ winalux_versions.djangorestframework }}"
+
+# --- Development Profiles ---
+# Defines the stack for each container type.
+# Note: We use a structured list to allow easy iteration in tasks.
+winalux_dev_profiles:
+  web:
+    description: "Optimized for API delivery and static file serving."
+    packages: "{{ winalux_base_packages + ['django-cors-headers', 'whitenoise'] }}"
+
+  data:
+    description: "Tailored for data analysis and scientific computing."
+    packages: "{{ winalux_base_packages + ['pandas==' + winalux_versions.pandas, 'numpy'] }}"
+
+  full:
+    description: "Full stack including background workers and processing tools."
+    packages:
+      - "{{ winalux_base_packages }}"
+      - "pandas=={{ winalux_versions.pandas }}"
+      - "faktory=={{ winalux_versions.faktory }}"
+
+# --- Execution Flags ---
+# Set to true to force 'pip install --force-reinstall'
+winalux_force_package_update: false

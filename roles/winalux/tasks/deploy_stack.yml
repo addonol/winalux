@@ -1,0 +1,70 @@
+# @file roles/winalux/tasks/deploy_stack.yml
+# @package winalux-core
+# @description
+#   Manages the full lifecycle of developer stacks. Creates persistent storage,
+#   orchestrates Podman pods for network isolation, and deploys profile-specific
+#   containers with cross-architecture support.
+#
+# @args winalux_dev: Dictionary with keys (name, profile, ssh_port, app_port, extra_ports)
+# @args winalux_project_name: Name of the project for tagging and image naming.
+# @args winalux_use_local_image: Boolean to toggle between local registry and Docker Hub.
+
+---
+
+- name: "Stack | Persistent Storage"
+  # Ensures developer data survives container recreation.
+  containers.podman.podman_volume:
+    name: "winalux_vol_{{ winalux_dev.name }}"
+    state: present
+    label:
+      project: winalux
+      owner: "{{ winalux_dev.name }}"
+  become: false
+
+- name: "Stack | Set Internal Port based on Profile"
+  ansible.builtin.set_fact:
+    winalux_internal_port: "{{ '8888' if winalux_dev.profile == 'data' else '8000' }}"
+
+- name: "Stack | Network Isolation (Pod)"
+  # Creates a dedicated network namespace for the developer.
+  # Ports are aggregated from base requirements and custom inventory definitions.
+  containers.podman.podman_pod:
+    name: "winalux_pod_{{ winalux_dev.name }}"
+    hostname: "winalux_{{ winalux_dev.name }}"
+    state: started
+    # Recreates the pod if ports or configuration change
+    recreate: true
+    label:
+      owner: "{{ winalux_dev.name }}"
+      project: "{{ winalux_project_name }}"
+    ports: "{{ [
+        winalux_dev.ssh_port ~ ':2222',
+        winalux_dev.app_port ~ ':' ~ winalux_internal_port
+      ] | union(winalux_dev.extra_ports | default([])) }}"
+  become: false
+
+
+- name: "Stack | Container Deployment"
+  containers.podman.podman_container:
+    # Final orchestration of the container.
+    # Handles image source switching (Local Registry vs Docker Hub).
+    name: "winalux_{{ winalux_dev.name }}"
+    image: >-
+      {{ 'localhost/' ~ winalux_project_name  ~ '-' ~ winalux_dev.profile ~ ':' ~ winalux_release_version
+        if winalux_use_local_image  | bool
+        else 'docker.io/addonol/winalux:' ~ winalux_dev.profile ~ '-' ~ winalux_release_version }}
+    state: started
+    pod: "winalux_pod_{{ winalux_dev.name }}"
+    user: "1000"
+    pull: "{{ 'never' if winalux_use_local_image | default(false) | bool else 'always' }}"
+    recreate: true
+    working_dir: /home/developer
+    volumes:
+      - "winalux_vol_{{ winalux_dev.name }}:/home/developer:Z"
+    env:
+      DEV_USER: "{{ winalux_dev.name }}"
+      WINALUX_VERSION: "{{ winalux_release_version }}"
+      WINALUX_PROFILE: "{{ winalux_dev.profile }}"
+      PATH: "/home/developer/venv/bin:/usr/local/bin:/usr/bin:/bin"
+      VIRTUAL_ENV: "/home/developer/venv"
+  become: false

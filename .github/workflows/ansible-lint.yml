@@ -1,0 +1,17 @@
+name: "Ansible Linting"
+on: [push, pull_request]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Podman Collection
+        run: ansible-galaxy collection install containers.podman
+
+      - name: "Create dummy vault pass"
+        run: touch .vault_pass
+
+      - name: Run Ansible Lint
+        uses: ansible/ansible-lint@main

@@ -1,0 +1,123 @@
+# @file playbooks/build_multiarch.yml
+# @package winalux-factory
+# @description
+#   Automates the generation of hybrid container images compatible with both
+#   Intel/AMD (x86_64) and ARM64 architectures using Podman and QEMU.
+#
+# @technical_stack
+#   - Engine: Podman (Daemonless, secure alternative to Docker).
+#   - Emulation: QEMU user-static for cross-architecture builds.
+#   - Orchestration: Podman Manifests (Single tag for multiple architectures).
+#
+# @usage
+#   - Development: ansible-playbook build_multiarch.yml -e "push_to_hub=false"
+#   - Production:  ansible-playbook build_multiarch.yml -e "push_to_hub=true"
+
+---
+- name: Build and Provision Winalux Multi-Arch Image
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars_files:
+    - "{{ playbook_dir }}/../secrets.yml"
+    - "{{ playbook_dir }}/../inventory/group_vars/all.yml"
+
+  vars:
+    # --- Image Identity ---
+    image_name: "{{ winalux_project_name | default('winalux') }}"
+    image_tag: "web-{{ winalux_release_version | default('0.1.0') }}"
+    push_to_hub: false
+
+    # --- Registry Configuration ---
+    hub_full_name: "docker.io/{{ docker_hub_user }}/{{ image_name }}:{{ image_tag }}"
+    architectures:
+      - amd64
+      - arm64
+    manifest_name: "{{ image_name }}-manifest"
+    containerfile_path: "{{ playbook_dir }}/../roles/winalux/files/Containerfile"
+
+  tasks:
+    - name: "Environment Setup | Register QEMU handlers"
+      block:
+        - name: Register QEMU handlers
+          become: true
+          ansible.builtin.command:
+            cmd: podman run --rm --privileged docker.io/multiarch/qemu-user-static --reset -p yes
+          changed_when: false
+
+        - name: Registry Authentication
+          # Login only required if we intend to push the final manifest.
+          containers.podman.podman_login:
+            username: "{{ docker_hub_user }}"
+            password: "{{ docker_hub_token }}"
+            registry: docker.io
+          when: push_to_hub | bool
+
+    - name: "Manifest Workflow | Build and Assemble"
+      # This block handles the core logic of building multiple layers and grouping them.
+      block:
+        - name: Ensure clean state by removing existing manifests
+          ansible.builtin.command: "podman manifest rm {{ manifest_name }}"
+          register: manifest_rm_result
+          failed_when:
+            - manifest_rm_result.rc != 0
+            - "'image not known' not in manifest_rm_result.stderr"
+            - "'not found' not in manifest_rm_result.stderr"
+          changed_when: manifest_rm_result.rc == 0
+
+
+        - name: Initialize new multi-arch manifest
+          ansible.builtin.command: "podman manifest create {{ manifest_name }}"
+          changed_when: true
+
+        - name: Execute cross-platform build
+          # Loop through architectures to build and link images to the manifest.
+          ansible.builtin.command: >
+            podman build
+            --platform "linux/{{ item }}"
+            --manifest "{{ manifest_name }}"
+            --target profile-web
+            -f "{{ containerfile_path }}" .
+          loop: "{{ architectures }}"
+          register: build_output
+          changed_when: "'COMMIT' in build_output.stdout"
+
+        - name: Local Registry | Tag manifest for local deployment
+          ansible.builtin.command: >
+            podman tag {{ manifest_name }} localhost/{{ image_name }}-web:{{ winalux_release_version | default('0.1.0') }}
+          changed_when: true
+
+        - name: Push manifest to Docker Hub
+          ansible.builtin.command: "podman manifest push {{ manifest_name }} docker://{{ hub_full_name }}"
+          when: push_to_hub | bool
+          changed_when: true
+
+      rescue:
+        - name: Error handling during build or push
+          ansible.builtin.debug:
+            msg: "CRITICAL: Build failed or registry synchronization failed for {{ hub_full_name }}"
+
+      always:
+        - name: "Teardown | Cleanup build artifacts"
+          # Ensures the local environment remains clean, even if the build fails.
+          block:
+            - name: Check manifest existence before deletion
+              ansible.builtin.command: "podman manifest exists {{ manifest_name }}"
+              register: manifest_check
+              failed_when: false
+              changed_when: false
+
+            - name: Remove local manifest cache
+              ansible.builtin.command: "podman manifest rm {{ manifest_name }}"
+              when: 
+                - manifest_check.rc == 0
+                - push_to_hub | bool
+              changed_when: true
+
+            - name: Terminate registry session
+              containers.podman.podman_logout:
+                registry: docker.io
+              when:
+                - push_to_hub | bool
+                - docker_login_status is defined
