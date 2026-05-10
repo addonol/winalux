@@ -71,6 +71,7 @@
           ansible.builtin.command: >
             podman cp {{ ansible_facts['user_dir'] }}/gatekeeper_{{ winalux_dev.name }}.sh
             winalux_{{ winalux_dev.name }}:/usr/local/bin/winalux-gatekeeper
+          changed_when: true
 
         - name: "Security | Apply Shell Infiltration"
           containers.podman.podman_container_exec:
@@ -78,12 +79,12 @@
             user: root
             command: >
               /bin/bash -c '
-              chown root:root /usr/local/bin/winalux-gatekeeper && 
+              chown root:root /usr/local/bin/winalux-gatekeeper &&
               chmod 555 /usr/local/bin/winalux-gatekeeper &&
               if [ ! -f /bin/sh.real ]; then
                 cp /bin/sh /bin/sh.real
                 cp /bin/bash /bin/bash.real
-                
+
                 printf "#!/bin/sh.real\n. /usr/local/bin/winalux-gatekeeper\nexec /bin/sh.real \"\$@\"" > /usr/local/bin/sh-wrapper
                 printf "#!/bin/sh.real\n. /usr/local/bin/winalux-gatekeeper\nexec /bin/bash.real \"\$@\"" > /usr/local/bin/bash-wrapper
                 chmod +x /usr/local/bin/sh-wrapper /usr/local/bin/bash-wrapper
@@ -91,6 +92,7 @@
                 mv -f /usr/local/bin/sh-wrapper /bin/sh
                 mv -f /usr/local/bin/bash-wrapper /bin/bash
               fi'
+          changed_when: true
 
     - name: "Provisioning | Customize Developer Environment"
       containers.podman.podman_container_exec:
@@ -100,14 +102,14 @@
           /bin/bash.real -c '
           mkdir -p /home/developer/.ssh
           echo "{{ winalux_dev.public_key }}" > /home/developer/.ssh/authorized_keys
-          
+
           cat << "EOF" > /home/developer/.bashrc
           export WINALUX_PROFILE={{ winalux_dev.profile }}
           export PATH="/home/developer/venv/bin:/usr/local/bin:/usr/bin:/bin"
-          export PS1="\[\e[34m\]➜  \[\e[1;97m\]\w \[\e[90m\]\$( [ -n \"\$VIRTUAL_ENV\" ] && 
+          export PS1="\[\e[34m\]➜  \[\e[1;97m\]\w \[\e[90m\]\$( [ -n \"\$VIRTUAL_ENV\" ] &&
           echo \"(venv) \" )\[\e[34m\]\$\[\e[0m\] "
 
-          
+
           if ! pgrep -f "winalux-monitor" > /dev/null; then
               nohup /usr/local/bin/winalux-monitor > /dev/null 2>&1 &
           fi
@@ -152,7 +154,7 @@
                 name: "winalux_{{ winalux_dev.name }}"
                 user: root
                 command: |
-                  /bin/bash.real -c "chown root:root /usr/local/bin/winalux-monitor && 
+                  /bin/bash.real -c "chown root:root /usr/local/bin/winalux-monitor &&
                   chmod 755 /usr/local/bin/winalux-monitor"
 
             - name: "Monitoring | Launch Daemon as Developer"
@@ -190,7 +192,7 @@
             name: "winalux_{{ winalux_dev.name }}"
             user: root
             command: >
-              /bin/bash.real -c "chown 1000:1000 /home/developer/Taskfile.yml && 
+              /bin/bash.real -c "chown 1000:1000 /home/developer/Taskfile.yml &&
               chmod 555 /home/developer/Taskfile.yml"
 
     - name: "Provisioning | Cleanup Host Artifacts"

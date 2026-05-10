@@ -1,6 +1,6 @@
 # @file pyproject.toml
 # @package winalux-core
-# @description 
+# @description
 #   Python environment configuration for Winalux development.
 #   Uses 'uv' for high-performance dependency management of Ansible tools.
 
@@ -14,6 +14,9 @@ authors = [
     { name = "addonol" }
 ]
 license = { text = "MIT" }
+dependencies = [
+    "pre-commit>=4.6.0",
+]
 
 [dependency-groups]
 dev = [

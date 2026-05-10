@@ -1,6 +1,6 @@
 # @file Makefile
 # @package winalux-core
-# @description 
+# @description
 #   Orchestration entry point for Winalux.
 #   Uses explicit arguments to distinguish between target nodes and image sources.
 

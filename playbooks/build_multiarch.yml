@@ -110,7 +110,7 @@
 
             - name: Remove local manifest cache
               ansible.builtin.command: "podman manifest rm {{ manifest_name }}"
-              when: 
+              when:
                 - manifest_check.rc == 0
                 - push_to_hub | bool
               changed_when: true

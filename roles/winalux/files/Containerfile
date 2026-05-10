@@ -1,6 +1,6 @@
 # @file roles/winalux/files/Containerfile
 # @package winalux-core
-# @description 
+# @description
 #   Hardened multi-arch base image for Winalux developer environments.
 #   Optimized for rootless execution and secure remote access.
 

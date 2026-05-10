@@ -1,8 +1,8 @@
 # @file playbooks/deploy_dev.yml
 # @package winalux-core
-# @description 
+# @description
 #   Orchestrates the deployment of isolated developer environments on target nodes.
-#   Handles authentication, environment validation, and role injection for 
+#   Handles authentication, environment validation, and role injection for
 #   multi-user container provisioning.
 #
 # @usage
@@ -15,7 +15,7 @@
 - name: Deploy Winalux Environments
   hosts: all
   gather_facts: true
-  
+
   vars_files:
     - "{{ playbook_dir }}/../secrets.yml"
     - "{{ playbook_dir }}/../ansible/inventory/group_vars/all.yml"
@@ -54,6 +54,6 @@
           # Ensures no credentials remain cached on the target node.
           containers.podman.podman_logout:
             registry: docker.io
-          when: 
+          when:
             - not winalux_use_local_image | bool
             - docker_hub_token is defined
